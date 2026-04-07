@@ -107,6 +107,77 @@
   letter-spacing: -0.02em;
 }
 
+.success-view {
+  margin: auto 0;
+  display: grid;
+  gap: 14px;
+  text-align: center;
+  justify-items: center;
+}
+
+.success-kicker {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #ff9a2b;
+}
+
+.success-view h2 {
+  margin: 0;
+}
+
+.success-text {
+  margin: 0;
+  max-width: 42ch;
+  color: #344152;
+  font-size: 16px;
+  line-height: 1.45;
+}
+
+.success-view .next-btn {
+  margin-top: 6px;
+}
+
+.payment-view {
+  margin: auto 0;
+}
+
+.payment-subtitle {
+  margin: 10px 0 0;
+  color: #5a6472;
+  text-align: center;
+  font-size: 15px;
+}
+
+.payment-form {
+  margin-top: 22px;
+}
+
+.payment-slide-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #1e2b3a;
+}
+
+.payment-actions .next-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.check-status-btn {
+  margin-top: 10px;
+  width: 100%;
+}
+
+.payment-error {
+  margin: 0;
+  color: #b42318;
+  font-size: 14px;
+}
+
 .form {
   margin-top: 46px;
   display: grid;
@@ -126,7 +197,8 @@
 }
 
 .form input,
-.form textarea {
+.form textarea,
+.form select {
   border: 1px solid #eceef1;
   background: #f7f8fa;
   border-radius: 6px;
@@ -143,6 +215,89 @@
 .form textarea {
   resize: none;
   min-height: 130px;
+}
+
+.payment-method-group {
+  border: none;
+  margin: 4px 0 0;
+  padding: 0;
+}
+
+.payment-method-group legend {
+  color: #0f1722;
+  font-size: 16px;
+  font-weight: 500;
+  margin-bottom: 8px;
+}
+
+.card-meta-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.card-number-wrap {
+  position: relative;
+}
+
+.card-number-wrap input {
+  padding-right: 78px;
+}
+
+.card-brand-chip {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 44px;
+  height: 20px;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.transfer-popup-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.52);
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  z-index: 1000;
+}
+
+.transfer-popup {
+  width: min(460px, 100%);
+  background: #ffffff;
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.32);
+}
+
+.transfer-popup h3 {
+  margin: 0 0 10px;
+  color: #101a27;
+}
+
+.transfer-popup p {
+  margin: 6px 0;
+  color: #2a3340;
+}
+
+.transfer-balance {
+  font-weight: 700;
+  color: #0d6f36;
+}
+
+.transfer-note {
+  margin-top: 10px;
+  font-weight: 600;
+}
+
+.transfer-actions {
+  margin-top: 14px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 
 .step-two-form {
@@ -192,8 +347,19 @@
   color: #9aa0a8;
 }
 
+.field-hint {
+  margin: -8px 0 0;
+  font-size: 13px;
+  color: #2f6f3f;
+}
+
+.field-error {
+  color: #b42318;
+}
+
 .form input:focus,
-.form textarea:focus {
+.form textarea:focus,
+.form select:focus {
   border-color: #ff8b2c;
   box-shadow: 0 0 0 3px rgba(255, 139, 44, 0.15);
 }
@@ -489,7 +655,8 @@
   }
 
   .registration-card.mobile-form-active .form input,
-  .registration-card.mobile-form-active .form textarea {
+  .registration-card.mobile-form-active .form textarea,
+  .registration-card.mobile-form-active .form select {
     background: rgba(14, 26, 37, 0.9);
     border-color: #12283a;
     color: #ffffff;
@@ -500,10 +667,23 @@
     color: rgba(255, 255, 255, 0.34);
   }
 
+  .registration-card.mobile-form-active .field-hint {
+    color: rgba(180, 255, 195, 0.92);
+  }
+
+  .registration-card.mobile-form-active .field-error {
+    color: #ffb4ab;
+  }
+
   .registration-card.mobile-form-active .form input:focus,
-  .registration-card.mobile-form-active .form textarea:focus {
+  .registration-card.mobile-form-active .form textarea:focus,
+  .registration-card.mobile-form-active .form select:focus {
     border-color: #ffb400;
     box-shadow: 0 0 0 3px rgba(255, 180, 0, 0.15);
+  }
+
+  .registration-card.mobile-form-active .payment-method-group legend {
+    color: #ffffff;
   }
 
   .registration-card.mobile-form-active .step-two-form textarea {
@@ -530,6 +710,64 @@
     font-size: 20px;
     line-height: 1;
     padding: 13px 18px 14px;
+  }
+
+  .registration-card.mobile-form-active .success-view {
+    min-height: calc(100vh - 96px);
+    align-content: center;
+    text-align: left;
+    justify-items: stretch;
+  }
+
+  .registration-card.mobile-form-active .success-kicker {
+    text-align: left;
+    color: #ffbe3b;
+  }
+
+  .registration-card.mobile-form-active .success-view h2 {
+    color: #ffffff;
+    text-align: left;
+    font-size: 26px;
+    line-height: 1.18;
+    letter-spacing: -0.01em;
+  }
+
+  .registration-card.mobile-form-active .success-text {
+    color: rgba(255, 255, 255, 0.86);
+    text-align: left;
+    font-size: 15px;
+  }
+
+  .registration-card.mobile-form-active .payment-view {
+    margin: 0;
+  }
+
+  .registration-card.mobile-form-active .payment-subtitle {
+    text-align: left;
+    color: rgba(255, 255, 255, 0.82);
+    font-size: 14px;
+  }
+
+  .registration-card.mobile-form-active .payment-error {
+    color: #ffb4ab;
+  }
+
+  .registration-card.mobile-form-active .payment-slide-title {
+    color: #ffffff;
+  }
+
+  .registration-card.mobile-form-active .transfer-popup {
+    background: #0f1d2c;
+    border: 1px solid #21384f;
+  }
+
+  .registration-card.mobile-form-active .transfer-popup h3,
+  .registration-card.mobile-form-active .transfer-popup p {
+    color: #f1f5fb;
+  }
+
+  .registration-card.mobile-form-active .transfer-balance {
+    color: #93ffc2;
   }
 
   .mobile-start-btn {

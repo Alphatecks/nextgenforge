@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import botImage from './assets/bot.png'
 import logoImage from './assets/logo.png'
 import './App.css'
@@ -24,6 +24,8 @@ const initialFormData = {
 }
 
 const API_BASE_URL = 'https://nextgenforgebackend.onrender.com'
+const PAYMENT_SESSION_KEY = 'nextgenforge_payment_session'
+const PAYMENT_SESSION_TTL_MS = 45 * 60 * 1000
 
 function App() {
   const [isLoading, setIsLoading] = useState(true)
@@ -39,6 +41,7 @@ function App() {
   const [paymentReference, setPaymentReference] = useState('')
   const [paymentStatusMessage, setPaymentStatusMessage] = useState('')
   const [transferDetails, setTransferDetails] = useState(null)
+  const hasRestoredPaymentSessionRef = useRef(false)
 
   useEffect(() => {
     const finishLoading = () => {
@@ -62,7 +65,7 @@ function App() {
     setFormData((previous) => ({ ...previous, [name]: value }))
   }
 
-  const getPaymentOption = () => {
+  const getPaymentOption = useCallback(() => {
     if (formData.paymentChoice === 'installment') {
       return 'installment'
     }
@@ -70,7 +73,7 @@ function App() {
       return 'team'
     }
     return 'full'
-  }
+  }, [formData.paymentChoice])
 
   const getPaymentAmountKobo = () => {
     if (formData.paymentChoice === 'installment') {
@@ -79,10 +82,25 @@ function App() {
     if (formData.paymentChoice === 'team') {
       return 12000
     }
-    return 10000
+    return 100
   }
 
-  const submitQuestionnaire = async () => {
+  const persistPaymentSession = (reference = '') => {
+    const snapshot = {
+      currentStep: 4,
+      mobileStarted,
+      formData,
+      paymentReference: reference,
+      createdAt: Date.now(),
+    }
+    window.localStorage.setItem(PAYMENT_SESSION_KEY, JSON.stringify(snapshot))
+  }
+
+  const clearPaymentSession = () => {
+    window.localStorage.removeItem(PAYMENT_SESSION_KEY)
+  }
+
+  const submitQuestionnaire = useCallback(async () => {
     const payload = {
       email: formData.email,
       fullName: formData.name,
@@ -119,20 +137,21 @@ function App() {
     if (!response.ok) {
       throw new Error('Submission failed')
     }
-  }
+  }, [formData, getPaymentOption])
 
-  const finalizeSubmission = async () => {
+  const finalizeSubmission = useCallback(async () => {
     try {
       setIsPaystackProcessing(true)
       setPaymentError('')
       await submitQuestionnaire()
+      window.localStorage.removeItem(PAYMENT_SESSION_KEY)
       setCurrentStep(5)
     } catch {
       setPaymentError('Could not submit your questionnaire right now. Please try again.')
     } finally {
       setIsPaystackProcessing(false)
     }
-  }
+  }, [submitQuestionnaire])
 
   const isPaymentSuccessful = (response) => {
     const statusValue = String(
@@ -154,7 +173,7 @@ function App() {
 
   const waitFor = (delayMs) => new Promise((resolve) => window.setTimeout(resolve, delayMs))
 
-  const checkPaymentStatusAndFinalize = async (referenceToCheck) => {
+  const checkPaymentStatusAndFinalize = useCallback(async (referenceToCheck) => {
     if (!referenceToCheck) {
       setPaymentError('Missing payment reference. Initialize payment first.')
       return
@@ -203,9 +222,12 @@ function App() {
       setPaymentError('Unable to verify payment right now. Please try again.')
       setIsPaystackProcessing(false)
     }
-  }
+  }, [finalizeSubmission])
 
   const initializeCardPayment = async () => {
+    const callbackUrl = new URL(window.location.href)
+    callbackUrl.searchParams.set('payment_callback', '1')
+
     const response = await fetch(`${API_BASE_URL}/api/payments/initialize-card`, {
       method: 'POST',
       headers: {
@@ -215,7 +237,7 @@ function App() {
         email: formData.email,
         amount: getPaymentAmountKobo(),
         currency: 'NGN',
-        callbackUrl: `${window.location.origin}/payment/callback`,
+        callbackUrl: callbackUrl.toString(),
         metadata: {
           plan: getPaymentOption(),
         },
@@ -298,6 +320,7 @@ function App() {
       try {
         setIsPaystackProcessing(true)
         const cardInit = await initializeCardPayment()
+        const reference = cardInit?.reference || cardInit?.data?.reference || cardInit?.paymentReference || ''
         const authorizationUrl =
           cardInit?.authorizationUrl ||
           cardInit?.authorization_url ||
@@ -306,14 +329,21 @@ function App() {
           cardInit?.paymentLink ||
           cardInit?.data?.paymentLink
 
+        if (!reference) {
+          throw new Error('Missing payment reference from card initialization')
+        }
+
+        setPaymentReference(reference)
+        persistPaymentSession(reference)
+
         if (authorizationUrl) {
           window.open(authorizationUrl, '_blank', 'noopener,noreferrer')
         }
 
-        setPaymentStatusMessage('Card payment initialized successfully.')
-        await finalizeSubmission()
+        setPaymentStatusMessage('Card payment initialized. Complete checkout, then click check payment status.')
       } catch {
         setPaymentError('Could not initialize card payment. Please try again.')
+      } finally {
         setIsPaystackProcessing(false)
       }
       return
@@ -330,10 +360,11 @@ function App() {
       setTransferDetails({
         bankName: details?.bankName || details?.bank_name || details?.bank || 'Wema Bank',
         accountName:
-          details?.accountName || details?.account_name || details?.accountHolder || 'NextGenForge Fellowship',
+          details?.accountName || details?.account_name || details?.accountHolder || 'ALPHATECKSTEC',
         accountNumber: details?.accountNumber || details?.account_number || details?.virtualAccountNumber || 'N/A',
         balance: details?.accountBalance || details?.balance || 'NGN 0.00',
       })
+      persistPaymentSession(reference)
       setShowTransferPopup(true)
     } catch {
       setPaymentError('Could not initialize transfer payment. Please try again.')
@@ -390,8 +421,75 @@ function App() {
     setPaymentReference('')
     setPaymentStatusMessage('')
     setTransferDetails(null)
+    clearPaymentSession()
     setCurrentStep(1)
   }
+
+  useEffect(() => {
+    if (hasRestoredPaymentSessionRef.current) {
+      return
+    }
+    hasRestoredPaymentSessionRef.current = true
+
+    const url = new URL(window.location.href)
+    const hasCallbackParams =
+      url.searchParams.has('payment_callback') ||
+      url.searchParams.has('reference') ||
+      url.searchParams.has('trxref')
+
+    const raw = window.localStorage.getItem(PAYMENT_SESSION_KEY)
+    if (!raw) {
+      if (hasCallbackParams) {
+        url.searchParams.delete('payment_callback')
+        url.searchParams.delete('reference')
+        url.searchParams.delete('trxref')
+        window.history.replaceState({}, '', url.toString())
+      }
+      return
+    }
+
+    try {
+      const saved = JSON.parse(raw)
+      const isExpired =
+        !saved?.createdAt || Date.now() - Number(saved.createdAt) > PAYMENT_SESSION_TTL_MS
+      if (isExpired) {
+        clearPaymentSession()
+        if (hasCallbackParams) {
+          url.searchParams.delete('payment_callback')
+          url.searchParams.delete('reference')
+          url.searchParams.delete('trxref')
+          window.history.replaceState({}, '', url.toString())
+        }
+        return
+      }
+
+      if (!saved?.formData) {
+        return
+      }
+
+      setFormData(saved.formData)
+      setCurrentStep(4)
+      setMobileStarted(Boolean(saved.mobileStarted))
+      setPaymentReference(saved.paymentReference || '')
+
+      const callbackRef = url.searchParams.get('reference') || url.searchParams.get('trxref') || saved.paymentReference
+      const isPaymentCallback = url.searchParams.get('payment_callback') === '1'
+
+      if (isPaymentCallback && callbackRef) {
+        setPaymentReference(callbackRef)
+        setPaymentStatusMessage('Payment callback received. Tap check payment status to verify.')
+      }
+
+      if (url.searchParams.has('payment_callback') || url.searchParams.has('reference') || url.searchParams.has('trxref')) {
+        url.searchParams.delete('payment_callback')
+        url.searchParams.delete('reference')
+        url.searchParams.delete('trxref')
+        window.history.replaceState({}, '', url.toString())
+      }
+    } catch {
+      clearPaymentSession()
+    }
+  }, [checkPaymentStatusAndFinalize])
 
   useEffect(() => {
     const emailValue = formData.email.trim()
@@ -913,6 +1011,16 @@ function App() {
                       {isPaystackProcessing ? 'Preparing...' : 'Proceed to Payments'}
                     </button>
                   </div>
+                  {formData.paymentMethod === 'card' && paymentReference && (
+                    <button
+                      className="next-btn check-status-btn"
+                      type="button"
+                      onClick={() => checkPaymentStatusAndFinalize(paymentReference)}
+                      disabled={isPaystackProcessing}
+                    >
+                      {isPaystackProcessing ? 'Checking...' : 'Check Payment Status'}
+                    </button>
+                  )}
               </form>
 
               {showTransferPopup && (
@@ -920,7 +1028,7 @@ function App() {
                   <div className="transfer-popup">
                     <h3>Transfer Payment</h3>
                     <p>Bank: {transferDetails?.bankName || 'Wema Bank'}</p>
-                    <p>Account Name: {transferDetails?.accountName || 'NextGenForge Fellowship'}</p>
+                    <p>Account Name: {transferDetails?.accountName || 'ALPHATECKSTEC'}</p>
                     <p>Account Number: {transferDetails?.accountNumber || 'N/A'}</p>
                     <p className="transfer-note">Amount to transfer: NGN {getPaymentAmountKobo() / 100}</p>
                     {paymentStatusMessage && <p className="field-hint">{paymentStatusMessage}</p>}
