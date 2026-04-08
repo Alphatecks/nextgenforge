@@ -25,7 +25,8 @@ const initialFormData = {
 
 const API_BASE_URL = 'https://nextgenforgebackend.onrender.com'
 const PAYMENT_SESSION_KEY = 'nextgenforge_payment_session'
-const PAYMENT_SESSION_TTL_MS = 45 * 60 * 1000
+const USD_TO_NAIRA_RATE = 1400
+const E164_PHONE_REGEX = /^\+[1-9]\d{7,14}$/
 
 function App() {
   const [isLoading, setIsLoading] = useState(true)
@@ -37,11 +38,21 @@ function App() {
   const [isPaystackProcessing, setIsPaystackProcessing] = useState(false)
   const [emailCheckStatus, setEmailCheckStatus] = useState('idle')
   const [emailCheckMessage, setEmailCheckMessage] = useState('')
-  const [showTransferPopup, setShowTransferPopup] = useState(false)
   const [paymentReference, setPaymentReference] = useState('')
   const [paymentStatusMessage, setPaymentStatusMessage] = useState('')
-  const [transferDetails, setTransferDetails] = useState(null)
+  const [finalizationNotice, setFinalizationNotice] = useState('')
   const hasRestoredPaymentSessionRef = useRef(false)
+  const autoCheckedCallbackReferenceRef = useRef('')
+
+  const getPaymentOptionFromChoice = useCallback((paymentChoice) => {
+    if (paymentChoice === 'installment') {
+      return 'installment'
+    }
+    if (paymentChoice === 'team') {
+      return 'team'
+    }
+    return 'full'
+  }, [])
 
   useEffect(() => {
     const finishLoading = () => {
@@ -60,30 +71,51 @@ function App() {
     }
   }, [])
 
+  const getPaymentAmountUsdByChoice = (paymentChoice) => {
+    if (paymentChoice === 'installment') {
+      return 30
+    }
+    if (paymentChoice === 'team') {
+      return 120
+    }
+    return 50
+  }
+
+  const buildPayloadSnapshot = (data) => {
+    const paymentAmountUsd = getPaymentAmountUsdByChoice(data.paymentChoice)
+    const paymentAmountNaira = paymentAmountUsd * USD_TO_NAIRA_RATE
+    return {
+      ...data,
+      paymentAmountUsd,
+      paymentAmountNaira,
+      paymentRate: USD_TO_NAIRA_RATE,
+    }
+  }
+
+  const logPayload = (tag, data) => {
+    console.log(`[Payload] ${tag}:`, buildPayloadSnapshot(data))
+  }
+
   const handleFieldChange = (event) => {
     const { name, value } = event.target
-    setFormData((previous) => ({ ...previous, [name]: value }))
+    setFormData((previous) => {
+      const nextData = { ...previous, [name]: value }
+      logPayload(`field_change:${name}`, nextData)
+      return nextData
+    })
   }
 
   const getPaymentOption = useCallback(() => {
-    if (formData.paymentChoice === 'installment') {
-      return 'installment'
-    }
-    if (formData.paymentChoice === 'team') {
-      return 'team'
-    }
-    return 'full'
-  }, [formData.paymentChoice])
+    return getPaymentOptionFromChoice(formData.paymentChoice)
+  }, [formData.paymentChoice, getPaymentOptionFromChoice])
 
-  const getPaymentAmountKobo = () => {
-    if (formData.paymentChoice === 'installment') {
-      return 3000
-    }
-    if (formData.paymentChoice === 'team') {
-      return 12000
-    }
-    return 100
+  const getPaymentAmountUsd = () => getPaymentAmountUsdByChoice(formData.paymentChoice)
+
+  const getPaymentAmountNaira = () => {
+    return getPaymentAmountUsd() * USD_TO_NAIRA_RATE
   }
+
+  const formatNairaAmount = (amount) => amount.toLocaleString('en-NG')
 
   const persistPaymentSession = (reference = '') => {
     const snapshot = {
@@ -100,27 +132,27 @@ function App() {
     window.localStorage.removeItem(PAYMENT_SESSION_KEY)
   }
 
-  const submitQuestionnaire = useCallback(async () => {
+  const submitQuestionnaire = useCallback(async (submissionData = formData) => {
     const payload = {
-      email: formData.email,
-      fullName: formData.name,
-      whatsappNumber: formData.whatsapp,
-      expectations: formData.expectations,
-      whySelected: formData.selectionReason,
-      referredBy: formData.referrer,
-      proficiencyLevel: formData.proficiency,
-      activeEnrollment: formData.enrolmentChoice === 'yes',
-      trainedOnAgenticPlatform: formData.trainedBefore,
-      dailyCommitHours: formData.dailyHours,
-      paymentOption: getPaymentOption(),
-      paymentMethod: formData.paymentMethod,
+      email: submissionData.email,
+      fullName: submissionData.name,
+      whatsappNumber: submissionData.whatsapp,
+      expectations: submissionData.expectations,
+      whySelected: submissionData.selectionReason,
+      referredBy: submissionData.referrer,
+      proficiencyLevel: submissionData.proficiency,
+      activeEnrollment: submissionData.enrolmentChoice === 'yes',
+      trainedOnAgenticPlatform: submissionData.trainedBefore,
+      dailyCommitHours: submissionData.dailyHours,
+      paymentOption: getPaymentOptionFromChoice(submissionData.paymentChoice),
+      paymentMethod: submissionData.paymentMethod,
       paymentMeta:
-        formData.paymentMethod === 'card'
+        submissionData.paymentMethod === 'card'
           ? {
               cardInitialized: true,
             }
           : {
-              transferType: formData.transferType,
+              transferType: submissionData.transferType,
             },
       source: 'landing_page',
     }
@@ -137,21 +169,41 @@ function App() {
     if (!response.ok) {
       throw new Error('Submission failed')
     }
-  }, [formData, getPaymentOption])
+  }, [formData, getPaymentOptionFromChoice])
 
-  const finalizeSubmission = useCallback(async () => {
+  const finalizeSubmission = useCallback(async (submissionData = formData) => {
+    const retryDelaysMs = [0, 1200, 2400]
     try {
       setIsPaystackProcessing(true)
       setPaymentError('')
-      await submitQuestionnaire()
-      window.localStorage.removeItem(PAYMENT_SESSION_KEY)
+      setFinalizationNotice('')
+      clearPaymentSession()
       setCurrentStep(5)
+
+      let submitted = false
+      for (let attempt = 0; attempt < retryDelaysMs.length; attempt += 1) {
+        const delay = retryDelaysMs[attempt]
+        if (delay > 0) {
+          await waitFor(delay)
+        }
+        try {
+          await submitQuestionnaire(submissionData)
+          submitted = true
+          break
+        } catch {
+          // Retry a couple of times before showing a non-blocking notice.
+        }
+      }
+
+      if (!submitted) {
+        setFinalizationNotice('Payment was successful. We are still syncing your registration details; our team will follow up if needed.')
+      }
     } catch {
-      setPaymentError('Could not submit your questionnaire right now. Please try again.')
+      setFinalizationNotice('Payment was successful. We are still syncing your registration details; our team will follow up if needed.')
     } finally {
       setIsPaystackProcessing(false)
     }
-  }, [submitQuestionnaire])
+  }, [formData, submitQuestionnaire])
 
   const isPaymentSuccessful = (response) => {
     const statusValue = String(
@@ -173,7 +225,7 @@ function App() {
 
   const waitFor = (delayMs) => new Promise((resolve) => window.setTimeout(resolve, delayMs))
 
-  const checkPaymentStatusAndFinalize = useCallback(async (referenceToCheck) => {
+  const checkPaymentStatusAndFinalize = useCallback(async (referenceToCheck, submissionData = formData) => {
     if (!referenceToCheck) {
       setPaymentError('Missing payment reference. Initialize payment first.')
       return
@@ -202,7 +254,7 @@ function App() {
           const statusResult = await response.json()
           if (isPaymentSuccessful(statusResult)) {
             setPaymentStatusMessage('Payment confirmed. Finalizing submission...')
-            await finalizeSubmission()
+            await finalizeSubmission(submissionData)
             return
           }
         } catch {
@@ -216,32 +268,35 @@ function App() {
         return
       }
 
-      setPaymentStatusMessage('Payment is not yet confirmed. Complete payment and try status check again.')
+      setPaymentStatusMessage('Payment is not yet confirmed. Complete checkout and return to this page for automatic verification.')
       setIsPaystackProcessing(false)
     } catch {
       setPaymentError('Unable to verify payment right now. Please try again.')
       setIsPaystackProcessing(false)
     }
-  }, [finalizeSubmission])
+  }, [finalizeSubmission, formData])
 
   const initializeCardPayment = async () => {
     const callbackUrl = new URL(window.location.href)
     callbackUrl.searchParams.set('payment_callback', '1')
+    const cardInitPayload = {
+      email: formData.email,
+      amount: getPaymentAmountNaira(),
+      currency: 'NGN',
+      callbackUrl: callbackUrl.toString(),
+      metadata: {
+        plan: getPaymentOption(),
+      },
+    }
+    logPayload('initialize_card:form', formData)
+    console.log('[Payload] initialize_card:request_body', cardInitPayload)
 
     const response = await fetch(`${API_BASE_URL}/api/payments/initialize-card`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        email: formData.email,
-        amount: getPaymentAmountKobo(),
-        currency: 'NGN',
-        callbackUrl: callbackUrl.toString(),
-        metadata: {
-          plan: getPaymentOption(),
-        },
-      }),
+      body: JSON.stringify(cardInitPayload),
     })
     if (!response.ok) {
       throw new Error('Unable to initialize card payment')
@@ -249,37 +304,9 @@ function App() {
     return response.json()
   }
 
-  const initializeTransferPayment = async () => {
-    const nameParts = formData.name.trim().split(/\s+/)
-    const firstName = nameParts[0] || 'User'
-    const lastName = nameParts.slice(1).join(' ') || 'Fellowship'
-
-    const response = await fetch(`${API_BASE_URL}/api/payments/initialize-transfer`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        email: formData.email,
-        amount: getPaymentAmountKobo(),
-        currency: 'NGN',
-        firstName,
-        lastName,
-        phone: formData.whatsapp,
-        preferredBank: 'wema-bank',
-        metadata: {
-          plan: getPaymentOption(),
-        },
-      }),
-    })
-    if (!response.ok) {
-      throw new Error('Unable to initialize transfer payment')
-    }
-    return response.json()
-  }
-
   const handleStep1Submit = (event) => {
     event.preventDefault()
+    logPayload('step1_submit', formData)
     const hasValidEmailFormat = /\S+@\S+\.\S+/.test(formData.email.trim())
     if (emailCheckStatus === 'exists' && hasValidEmailFormat) {
       setEmailCheckMessage('This email already exists in our records.')
@@ -293,6 +320,7 @@ function App() {
 
   const handleStep2Submit = (event) => {
     event.preventDefault()
+    logPayload('step2_submit', formData)
     if (!event.currentTarget.reportValidity()) {
       return
     }
@@ -301,80 +329,51 @@ function App() {
 
   const handleStep3Submit = (event) => {
     event.preventDefault()
+    logPayload('step3_submit', formData)
     if (!event.currentTarget.reportValidity()) {
       return
     }
     setPaymentError('')
-    setShowTransferPopup(false)
     setPaymentReference('')
     setPaymentStatusMessage('')
-    setTransferDetails(null)
+    setFinalizationNotice('')
     setCurrentStep(4) // payment step
   }
 
   const handleProceedToPayments = async (event) => {
     event.preventDefault()
+    logPayload('payment_submit', formData)
     setPaymentError('')
     setPaymentStatusMessage('')
-    if (formData.paymentMethod === 'card') {
-      try {
-        setIsPaystackProcessing(true)
-        const cardInit = await initializeCardPayment()
-        const reference = cardInit?.reference || cardInit?.data?.reference || cardInit?.paymentReference || ''
-        const authorizationUrl =
-          cardInit?.authorizationUrl ||
-          cardInit?.authorization_url ||
-          cardInit?.data?.authorization_url ||
-          cardInit?.data?.authorizationUrl ||
-          cardInit?.paymentLink ||
-          cardInit?.data?.paymentLink
-
-        if (!reference) {
-          throw new Error('Missing payment reference from card initialization')
-        }
-
-        setPaymentReference(reference)
-        persistPaymentSession(reference)
-
-        if (authorizationUrl) {
-          window.open(authorizationUrl, '_blank', 'noopener,noreferrer')
-        }
-
-        setPaymentStatusMessage('Card payment initialized. Complete checkout, then click check payment status.')
-      } catch {
-        setPaymentError('Could not initialize card payment. Please try again.')
-      } finally {
-        setIsPaystackProcessing(false)
-      }
-      return
-    }
-
     try {
       setIsPaystackProcessing(true)
-      const transferInit = await initializeTransferPayment()
-      const reference =
-        transferInit?.reference || transferInit?.data?.reference || transferInit?.paymentReference || ''
-      const details = transferInit?.data || transferInit
+      const cardInit = await initializeCardPayment()
+      const reference = cardInit?.reference || cardInit?.data?.reference || cardInit?.paymentReference || ''
+      const authorizationUrl =
+        cardInit?.authorizationUrl ||
+        cardInit?.authorization_url ||
+        cardInit?.data?.authorization_url ||
+        cardInit?.data?.authorizationUrl ||
+        cardInit?.paymentLink ||
+        cardInit?.data?.paymentLink
+
+      if (!reference) {
+        throw new Error('Missing payment reference from card initialization')
+      }
 
       setPaymentReference(reference)
-      setTransferDetails({
-        bankName: details?.bankName || details?.bank_name || details?.bank || 'Wema Bank',
-        accountName:
-          details?.accountName || details?.account_name || details?.accountHolder || 'ALPHATECKSTEC',
-        accountNumber: details?.accountNumber || details?.account_number || details?.virtualAccountNumber || 'N/A',
-        balance: details?.accountBalance || details?.balance || 'NGN 0.00',
-      })
       persistPaymentSession(reference)
-      setShowTransferPopup(true)
+
+      if (authorizationUrl) {
+        window.open(authorizationUrl, '_blank', 'noopener,noreferrer')
+      }
+
+      setPaymentStatusMessage('Card payment initialized. Complete checkout and return here. Verification will happen automatically.')
     } catch {
-      setPaymentError('Could not initialize transfer payment. Please try again.')
+      setPaymentError('Could not initialize card payment. Please try again.')
     } finally {
       setIsPaystackProcessing(false)
     }
-  }
-
-  const handleTransferConfirmation = async () => {
-    await checkPaymentStatusAndFinalize(paymentReference)
   }
 
   const handleStep1Reset = (event) => {
@@ -417,10 +416,10 @@ function App() {
     setIsPaystackProcessing(false)
     setEmailCheckStatus('idle')
     setEmailCheckMessage('')
-    setShowTransferPopup(false)
     setPaymentReference('')
     setPaymentStatusMessage('')
-    setTransferDetails(null)
+    setFinalizationNotice('')
+    autoCheckedCallbackReferenceRef.current = ''
     clearPaymentSession()
     setCurrentStep(1)
   }
@@ -432,64 +431,18 @@ function App() {
     hasRestoredPaymentSessionRef.current = true
 
     const url = new URL(window.location.href)
-    const hasCallbackParams =
-      url.searchParams.has('payment_callback') ||
-      url.searchParams.has('reference') ||
-      url.searchParams.has('trxref')
+    clearPaymentSession()
+    setCurrentStep(1)
+    setPaymentReference('')
+    setPaymentStatusMessage('')
 
-    const raw = window.localStorage.getItem(PAYMENT_SESSION_KEY)
-    if (!raw) {
-      if (hasCallbackParams) {
-        url.searchParams.delete('payment_callback')
-        url.searchParams.delete('reference')
-        url.searchParams.delete('trxref')
-        window.history.replaceState({}, '', url.toString())
-      }
-      return
+    if (url.searchParams.has('payment_callback') || url.searchParams.has('reference') || url.searchParams.has('trxref')) {
+      url.searchParams.delete('payment_callback')
+      url.searchParams.delete('reference')
+      url.searchParams.delete('trxref')
+      window.history.replaceState({}, '', url.toString())
     }
-
-    try {
-      const saved = JSON.parse(raw)
-      const isExpired =
-        !saved?.createdAt || Date.now() - Number(saved.createdAt) > PAYMENT_SESSION_TTL_MS
-      if (isExpired) {
-        clearPaymentSession()
-        if (hasCallbackParams) {
-          url.searchParams.delete('payment_callback')
-          url.searchParams.delete('reference')
-          url.searchParams.delete('trxref')
-          window.history.replaceState({}, '', url.toString())
-        }
-        return
-      }
-
-      if (!saved?.formData) {
-        return
-      }
-
-      setFormData(saved.formData)
-      setCurrentStep(4)
-      setMobileStarted(Boolean(saved.mobileStarted))
-      setPaymentReference(saved.paymentReference || '')
-
-      const callbackRef = url.searchParams.get('reference') || url.searchParams.get('trxref') || saved.paymentReference
-      const isPaymentCallback = url.searchParams.get('payment_callback') === '1'
-
-      if (isPaymentCallback && callbackRef) {
-        setPaymentReference(callbackRef)
-        setPaymentStatusMessage('Payment callback received. Tap check payment status to verify.')
-      }
-
-      if (url.searchParams.has('payment_callback') || url.searchParams.has('reference') || url.searchParams.has('trxref')) {
-        url.searchParams.delete('payment_callback')
-        url.searchParams.delete('reference')
-        url.searchParams.delete('trxref')
-        window.history.replaceState({}, '', url.toString())
-      }
-    } catch {
-      clearPaymentSession()
-    }
-  }, [checkPaymentStatusAndFinalize])
+  }, [])
 
   useEffect(() => {
     const emailValue = formData.email.trim()
@@ -972,33 +925,10 @@ function App() {
                   />
 
                   <label htmlFor="paymentAmount">Amount</label>
-                  <input id="paymentAmount" type="text" value={`NGN ${getPaymentAmountKobo() / 100}`} readOnly />
+                  <input id="paymentAmount" type="text" value={`NGN ${formatNairaAmount(getPaymentAmountNaira())}`} readOnly />
 
-                  <fieldset className="payment-method-group">
-                    <legend>Payment method</legend>
-                    <label className="question-option" htmlFor="methodCard">
-                      <input
-                        id="methodCard"
-                        name="paymentMethod"
-                        type="radio"
-                        value="card"
-                        checked={formData.paymentMethod === 'card'}
-                        onChange={handleFieldChange}
-                      />
-                      <span>Card</span>
-                    </label>
-                    <label className="question-option" htmlFor="methodTransfer">
-                      <input
-                        id="methodTransfer"
-                        name="paymentMethod"
-                        type="radio"
-                        value="transfer"
-                        checked={formData.paymentMethod === 'transfer'}
-                        onChange={handleFieldChange}
-                      />
-                      <span>Transfer</span>
-                    </label>
-                  </fieldset>
+                  <label htmlFor="paymentMethod">Payment method</label>
+                  <input id="paymentMethod" type="text" value="Card" readOnly />
 
                   {paymentError && <p className="payment-error">{paymentError}</p>}
                   {paymentStatusMessage && <p className="field-hint">{paymentStatusMessage}</p>}
@@ -1011,44 +941,8 @@ function App() {
                       {isPaystackProcessing ? 'Preparing...' : 'Proceed to Payments'}
                     </button>
                   </div>
-                  {formData.paymentMethod === 'card' && paymentReference && (
-                    <button
-                      className="next-btn check-status-btn"
-                      type="button"
-                      onClick={() => checkPaymentStatusAndFinalize(paymentReference)}
-                      disabled={isPaystackProcessing}
-                    >
-                      {isPaystackProcessing ? 'Checking...' : 'Check Payment Status'}
-                    </button>
-                  )}
               </form>
 
-              {showTransferPopup && (
-                <div className="transfer-popup-overlay" role="dialog" aria-modal="true">
-                  <div className="transfer-popup">
-                    <h3>Transfer Payment</h3>
-                    <p>Bank: {transferDetails?.bankName || 'Wema Bank'}</p>
-                    <p>Account Name: {transferDetails?.accountName || 'ALPHATECKSTEC'}</p>
-                    <p>Account Number: {transferDetails?.accountNumber || 'N/A'}</p>
-                    <p className="transfer-note">Amount to transfer: NGN {getPaymentAmountKobo() / 100}</p>
-                    {paymentStatusMessage && <p className="field-hint">{paymentStatusMessage}</p>}
-                    {paymentError && <p className="payment-error">{paymentError}</p>}
-                    <div className="transfer-actions">
-                      <button className="clear-btn" type="button" onClick={() => setShowTransferPopup(false)}>
-                        Cancel
-                      </button>
-                      <button
-                        className="next-btn"
-                        type="button"
-                        onClick={handleTransferConfirmation}
-                        disabled={isPaystackProcessing}
-                      >
-                        {isPaystackProcessing ? 'Checking...' : 'I have made transfer'}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
             </section>
           ) : (
             <section className="success-view" aria-live="polite">
@@ -1056,9 +950,10 @@ function App() {
               <p className="success-kicker">Registration completed</p>
               <h2>Success! Your details were submitted.</h2>
               <p className="success-text">
-                Thanks {formData.name || 'there'} - your form has been received and our team will reach out with
+                Thanks {formData.name || 'there'} - your payment is confirmed and our team will reach out with
                 next steps shortly.
               </p>
+              {finalizationNotice && <p className="field-hint">{finalizationNotice}</p>}
               <button className="next-btn" type="button" onClick={handleStartOver}>
                 Start Over
               </button>
